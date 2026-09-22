@@ -99,9 +99,9 @@ def search_news():
             }), 400
         
         # Validate max_results and page
-        if not isinstance(max_results, int) or max_results < 1 or max_results > 100:
+        if not isinstance(max_results, int) or max_results < 1 or max_results > 500:
             return jsonify({
-                'error': 'max_results must be between 1 and 100'
+                'error': 'max_results must be between 1 and 500'
             }), 400
         
         if not isinstance(page, int) or page < 1:

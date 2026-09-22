@@ -32,31 +32,47 @@ class NewsScraper:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
         })
     
-    def search_news(self, query: str, max_results: int = 100, page: int = 1) -> List[Dict]:
-        """Main entry point to search news"""
+    def search_news(self, query: str, max_results: int = 500, page: int = 1) -> List[Dict]:
+        """Main entry point to search news up to 500 articles"""
         articles = []
         
         # 1. Try NewsAPI if configured
         if self.newsapi:
             try:
-                articles = self._fetch_from_newsapi(query, max_results, page)
+                # Calculate how many pages of NewsAPI to fetch
+                pages_needed = min((max_results + 99) // 100, 5)
+                for p in range(1, pages_needed + 1):
+                    batch = self._fetch_from_newsapi(query, min(max_results - len(articles), 100), p)
+                    if not batch:
+                        break
+                    articles.extend(batch)
+                    if len(articles) >= max_results:
+                        break
             except Exception as e:
                 print(f"NewsAPI error: {str(e)}")
         
-        # 2. Try Fallback Scraper (RSS)
-        # If we have 0 articles or less than 5, try fallback
-        if len(articles) < 5:
+        # 2. Try Multi-Feed RSS Scraper (Google News + Bing News multi-region & temporal feeds)
+        if len(articles) < max_results:
             try:
-                scraped = self._scrape_google_news(query, max_results - len(articles), page)
-                articles.extend(scraped)
+                remaining_needed = max_results - len(articles)
+                scraped = self._scrape_google_news(query, remaining_needed, page)
+                
+                # Deduplicate with existing articles
+                existing_titles = set(a.get('title', '').strip().lower() for a in articles)
+                for item in scraped:
+                    t = item.get('title', '').strip().lower()
+                    if t and t not in existing_titles:
+                        existing_titles.add(t)
+                        articles.append(item)
+                        if len(articles) >= max_results:
+                            break
             except Exception as e:
-                print(f"Web scraping error: {str(e)}")
+                print(f"Multi-feed scraping error: {str(e)}")
         
-        # 3. EMERGENCY DEMO FALLBACK
-        # If we still have 0 results, provide good-looking mock data for the demo
+        # 3. EMERGENCY DEMO FALLBACK (Only if 0 articles could be fetched)
         if not articles:
             print(f"WARNING: All fetch methods failed for '{query}'. Providing emergency demo results.")
-            articles = self._get_emergency_articles(query, max_results)
+            articles = self._get_emergency_articles(query, min(max_results, 50))
         
         return articles[:max_results]
     
@@ -64,24 +80,22 @@ class NewsScraper:
         """Fetch articles from NewsAPI with pagination"""
         articles = []
         
-        # Calculate date range (last 30 days for free tier)
         to_date = datetime.now()
         from_date = to_date - timedelta(days=30)
         
         try:
-            # Fetch articles with page parameter
             response = self.newsapi.get_everything(
                 q=query,
                 from_param=from_date.strftime('%Y-%m-%d'),
                 to=to_date.strftime('%Y-%m-%d'),
                 language='en',
                 sort_by='publishedAt',
-                page_size=min(max_results, 100),  # API limit is 100
+                page_size=min(max_results, 100),
                 page=page
             )
             
-            if response['status'] == 'ok':
-                for article in response['articles']:
+            if response.get('status') == 'ok':
+                for article in response.get('articles', []):
                     articles.append({
                         'title': article.get('title', 'N/A'),
                         'description': article.get('description', 'N/A'),
@@ -94,133 +108,120 @@ class NewsScraper:
                     })
         except Exception as e:
             print(f"Error fetching from NewsAPI: {str(e)}")
-            raise
         
         return articles
     
     def _scrape_google_news(self, query: str, max_results: int, page: int = 1) -> List[Dict]:
-        """Fallback: Use Google News RSS feed / Bing RSS feed (more stable than HTML scraping)"""
+        """Parallel Multi-Feed News Aggregator: Google News (Global, US, UK, IN, CA, AU) + Time slices + Bing RSS"""
         articles = []
         encoded_query = urllib.parse.quote(query)
         
-        # Try multiple RSS URL formats with proper URL encoding
-        urls = [
+        # Construct multi-region, temporal, and provider feeds
+        feed_urls = [
+            # Google News Regional Feeds
             f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en",
-            f"https://www.bing.com/news/search?q={encoded_query}&format=rss"
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en",
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-GB&gl=GB&ceid=GB:en",
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-CA&gl=CA&ceid=CA:en",
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-AU&gl=AU&ceid=AU:en",
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-SG&gl=SG&ceid=SG:en",
+            # Google News Time Filtered Feeds
+            f"https://news.google.com/rss/search?q={encoded_query}+when:7d&hl=en-US&gl=US&ceid=US:en",
+            f"https://news.google.com/rss/search?q={encoded_query}+when:30d&hl=en-US&gl=US&ceid=US:en",
+            f"https://news.google.com/rss/search?q={encoded_query}+when:1y&hl=en-US&gl=US&ceid=US:en",
+            # Bing News RSS Feeds with offsets
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss",
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss&first=11",
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss&first=21",
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss&first=31",
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss&first=41"
         ]
         
-        # Use a list of modern User-Agents
         user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
         ]
         
-        try:
-            import random
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            
-            response = None
-            for rss_url in urls:
-                headers = {'User-Agent': random.choice(user_agents)}
-                try:
-                    # Clean request to bypass connection pool issues
-                    response = requests.get(rss_url, headers=headers, timeout=8, verify=False)
-                    if response.status_code == 200 and "Access Denied" not in response.text:
-                        break
-                    else:
-                        print(f"Fetch failed for {rss_url}: {response.status_code}")
-                except Exception as e:
-                    print(f"Initial request failed for {rss_url}: {str(e)}")
-                    continue
-            
-            if not response or response.status_code != 200 or "Access Denied" in response.text:
-                return []
-            
-            # Use BeautifulSoup for all parsing as it's more forgiving than ET
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.content, 'xml')
-            all_items = soup.find_all('item')
-            
-            if not all_items:
-                # Try simple HTML find if 'xml' parser failed
-                soup = BeautifulSoup(response.content, 'html.parser')
-                all_items = soup.find_all('item')
-            
-            if not all_items:
-                return []
-
-            # Rotation/Shuffling removed for search relevance
-            all_items = list(all_items)
-            
-            # Slice pagination
-            start_idx = (page - 1) * max_results
-            end_idx = start_idx + max_results
-            items = all_items[start_idx:end_idx]
-            
-            raw_articles = []
-            for item in items:
-                try:
-                    title = item.find('title').text if item.find('title') else "N/A"
-                    link = item.find('link').text if item.find('link') else "N/A"
-                    pub_date = item.find('pubDate').text if item.find('pubDate') else "N/A"
-                    
-                    source = "Google News"
-                    source_tag = item.find('source')
-                    if source_tag:
-                        source = source_tag.text
-                    
-                    # Clean description
-                    desc_tag = item.find('description')
-                    description = "No description available."
-                    if desc_tag:
-                        soup_desc = BeautifulSoup(desc_tag.text, 'html.parser')
-                        description = soup_desc.get_text().strip()
-                    
-                    raw_articles.append({
-                        'title': title,
-                        'description': description,
-                        'url': link,
-                        'published_date': pub_date,
-                        'author': 'N/A',
-                        'source': source,
-                        'image_url': 'N/A',
-                        'content': 'N/A'
-                    })
-                except:
-                    continue
-            
-            # Parallel URL decoding using googlenewsdecoder
-            if gnewsdecoder and raw_articles:
-                urls_to_decode = [art['url'] for art in raw_articles]
-                
-                def decode_single_url(url):
-                    try:
-                        res = gnewsdecoder(url)
-                        if res and res.get('status') and res.get('decoded_url'):
-                            return res['decoded_url']
-                    except Exception as e:
-                        print(f"Error decoding URL {url}: {str(e)}")
-                    return url
-                
-                with ThreadPoolExecutor(max_workers=20) as executor:
-                    decoded_urls = list(executor.map(decode_single_url, urls_to_decode))
-                
-                for idx, decoded_url in enumerate(decoded_urls):
-                    raw_articles[idx]['url'] = decoded_url
-            
-            # Deduplicate by URL
-            seen_urls = set()
-            for art in raw_articles:
-                u = art['url'].lower().strip()
-                if u not in seen_urls:
-                    seen_urls.add(u)
-                    articles.append(art)
-                    
-        except Exception as e:
-            print(f"Scraper error: {str(e)}")
+        import random
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
-        return articles
+        def fetch_feed(url):
+            try:
+                headers = {'User-Agent': random.choice(user_agents)}
+                resp = requests.get(url, headers=headers, timeout=6, verify=False)
+                if resp.status_code == 200 and "Access Denied" not in resp.text:
+                    soup = BeautifulSoup(resp.content, 'xml')
+                    items = soup.find_all('item')
+                    if not items:
+                        soup = BeautifulSoup(resp.content, 'html.parser')
+                        items = soup.find_all('item')
+                    
+                    parsed_items = []
+                    for item in items:
+                        try:
+                            title = item.find('title').text if item.find('title') else "N/A"
+                            link = item.find('link').text if item.find('link') else "N/A"
+                            pub_date = item.find('pubDate').text if item.find('pubDate') else "N/A"
+                            
+                            source = "News Network"
+                            source_tag = item.find('source')
+                            if source_tag and source_tag.text:
+                                source = source_tag.text.strip()
+                            elif " - " in title:
+                                # Often Google News RSS formats title as "Headline - Source Name"
+                                parts = title.rsplit(" - ", 1)
+                                if len(parts) == 2 and len(parts[1]) < 40:
+                                    source = parts[1].strip()
+                            
+                            desc_tag = item.find('description')
+                            description = "No description available."
+                            if desc_tag:
+                                soup_desc = BeautifulSoup(desc_tag.text, 'html.parser')
+                                description = soup_desc.get_text().strip()
+                            
+                            parsed_items.append({
+                                'title': title,
+                                'description': description,
+                                'url': link,
+                                'published_date': pub_date,
+                                'author': 'N/A',
+                                'source': source,
+                                'image_url': 'N/A',
+                                'content': 'N/A'
+                            })
+                        except Exception:
+                            continue
+                    return parsed_items
+            except Exception:
+                pass
+            return []
+        
+        # Parallel fetch across all feeds
+        all_raw_articles = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            feed_results = list(executor.map(fetch_feed, feed_urls))
+            for res in feed_results:
+                all_raw_articles.extend(res)
+        
+        # Deduplicate articles by title and URL
+        seen_titles = set()
+        seen_urls = set()
+        unique_articles = []
+        
+        for art in all_raw_articles:
+            clean_title = art['title'].lower().strip()
+            clean_url = art['url'].lower().strip()
+            
+            if clean_title not in seen_titles and clean_url not in seen_urls and len(clean_title) > 5:
+                seen_titles.add(clean_title)
+                seen_urls.add(clean_url)
+                unique_articles.append(art)
+                if len(unique_articles) >= max_results:
+                    break
+        
+        return unique_articles
     
     def _get_emergency_articles(self, query: str, max_results: int) -> List[Dict]:
         """Provides high-quality mock data for demos when API is blocked"""

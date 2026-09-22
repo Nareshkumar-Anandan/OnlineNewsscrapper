@@ -5,6 +5,7 @@ Handles fetching news articles from NewsAPI and web scraping fallback
 
 import os
 import requests
+import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from newsapi import NewsApiClient
@@ -28,7 +29,7 @@ class NewsScraper:
         self.newsapi = NewsApiClient(api_key=api_key) if api_key else None
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
         })
     
     def search_news(self, query: str, max_results: int = 100, page: int = 1) -> List[Dict]:
@@ -98,13 +99,14 @@ class NewsScraper:
         return articles
     
     def _scrape_google_news(self, query: str, max_results: int, page: int = 1) -> List[Dict]:
-        """Fallback: Use Google News RSS feed (more stable than HTML scraping)"""
+        """Fallback: Use Google News RSS feed / Bing RSS feed (more stable than HTML scraping)"""
         articles = []
+        encoded_query = urllib.parse.quote(query)
         
-        # Try multiple RSS URL formats
+        # Try multiple RSS URL formats with proper URL encoding
         urls = [
-            f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en",
-            f"https://news.google.com/news/rss/search/section/q/{query}/{query}?hl=en-US&gl=US&ceid=US:en"
+            f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en",
+            f"https://www.bing.com/news/search?q={encoded_query}&format=rss"
         ]
         
         # Use a list of modern User-Agents

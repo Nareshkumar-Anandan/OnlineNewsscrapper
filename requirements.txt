@@ -1,0 +1,14 @@
+flask
+flask-cors
+requests
+beautifulsoup4
+newspaper3k
+pandas
+openpyxl
+python-dotenv
+newsapi-python
+lxml
+lxml_html_clean
+Pillow
+gunicorn>=21.2.0
+waitress>=2.1.2

@@ -142,6 +142,45 @@ def search_news():
         }), 500
 
 
+@app.route('/api/export', methods=['POST'])
+def export_excel_direct():
+    """
+    Export articles provided in request body to Excel directly
+    
+    Request body:
+    {
+        "query": "search term",
+        "articles": [...]
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data or 'articles' not in data:
+            return jsonify({'error': 'Missing articles in request'}), 400
+            
+        articles = data.get('articles', [])
+        query = data.get('query', 'news')
+        
+        if not articles:
+            return jsonify({'error': 'No articles to export'}), 400
+            
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        clean_query = "".join(c for c in query if c.isalnum() or c in (' ', '_', '-')).strip() or 'news'
+        filename = f"news_{clean_query.replace(' ', '_')}_{timestamp}.xlsx"
+        
+        filepath = scraper.export_to_excel(articles, filename)
+        
+        return send_file(
+            filepath,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        print(f"Error in export_excel_direct: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
+
 @app.route('/api/export/<search_id>', methods=['GET'])
 def export_excel(search_id):
     """
@@ -172,7 +211,8 @@ def export_excel(search_id):
         
         # Generate filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"news_{query.replace(' ', '_')}_{timestamp}.xlsx"
+        clean_query = "".join(c for c in query if c.isalnum() or c in (' ', '_', '-')).strip() or 'news'
+        filename = f"news_{clean_query.replace(' ', '_')}_{timestamp}.xlsx"
         
         # Export to Excel
         filepath = scraper.export_to_excel(articles, filename)
